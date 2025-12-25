@@ -15,7 +15,7 @@ traci.start(Sumo_config)
 vehicle_speed = 0
 total_speed = 0
 
-input("Have you started simulation?")
+# input("Have you started simulation?")
 
 data = []
 
@@ -42,6 +42,7 @@ while traci.simulation.getMinExpectedNumber() > 0:
 traci.close()
 
 df = pd.DataFrame(data)
+df.to_csv("normal.csv")
 fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
 
 ax1.plot(df.time, df.wait)

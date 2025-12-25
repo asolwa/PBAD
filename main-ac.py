@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import libsumo as traci
+import pandas as pd
 
 # --- Configuration ---
 # Update these paths and IDs to match your specific SUMO network
@@ -40,6 +41,26 @@ GREEN_DURATION = 300  # Seconds (Minimum time between decisions)
 ALPHA_QUEUE = 1.0
 BETA_WAIT = 0.5
 
+
+SIM_TIME = 8100
+
+data = []
+def save_data():
+    wait = 0
+    queue_len = 0
+    for v in traci.vehicle.getIDList():
+        wait += traci.vehicle.getWaitingTime(v)
+    for e in traci.edge.getIDList():
+        queue_len += traci.edge.getLastStepHaltingNumber(e)
+    data.append({
+        'time': traci.simulation.getTime(),
+        'queue_len': queue_len,
+        'wait': wait
+    })
+
+def sim_step():
+    save_data()
+    traci.simulationStep()
 
 # --- 3. Neural Network (Actor-Critic) ---
 class ActorCritic(nn.Module):
@@ -124,7 +145,7 @@ def run_simulation():
     traci.trafficlight.setPhase(TL_ID, PHASE_CYCLE[current_phase_idx])
     
     # Run for 1 hour (3600 steps)
-    while step < 3600:
+    while step < SIM_TIME:
         
         # --- A. Observe State ---
         state_np = get_state(current_phase_idx)
@@ -148,7 +169,7 @@ def run_simulation():
             # 2. Set Yellow & Simulate
             traci.trafficlight.setPhase(TL_ID, yellow_phase_id)
             for _ in range(YELLOW_DURATION):
-                traci.simulationStep()
+                sim_step()
                 step += 1
                 reward_accumulated += get_reward()
             
@@ -162,8 +183,8 @@ def run_simulation():
         # --- D. Green Duration (Minimum Hold Time) ---
         # We hold the (new or existing) Green light for 10 seconds
         for _ in range(GREEN_DURATION):
-            if step >= 3600: break
-            traci.simulationStep()
+            if step >= SIM_TIME: break
+            sim_step()
             step += 1
             reward_accumulated += get_reward()
             
@@ -204,6 +225,9 @@ def run_simulation():
 
     traci.close()
     print("Simulation finished.")
+
+    df = pd.DataFrame(data)
+    df.to_csv("ac.csv")
 
 if __name__ == "__main__":
     run_simulation()
