@@ -15,7 +15,7 @@ traci.start(Sumo_config)
 vehicle_speed = 0
 total_speed = 0
 
-# input("Have you started simulation?")
+input("Have you started simulation?")
 
 data = []
 
