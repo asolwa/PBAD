@@ -133,6 +133,9 @@ def get_reward():
 def run_simulation():
     # Initialize Model & Optimizer
     model = ActorCritic(STATE_DIM, ACTION_DIM)
+    model.load_state_dict(torch.load("ac.pth"))
+    model.eval()
+
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     
     # Start Simulation
@@ -144,90 +147,59 @@ def run_simulation():
     # Set initial phase
     traci.trafficlight.setPhase(TL_ID, PHASE_CYCLE[current_phase_idx])
     
-    # Run for 1 hour (3600 steps)
-    while step < SIM_TIME:
-        
-        # --- A. Observe State ---
-        state_np = get_state(current_phase_idx)
-        state_tensor = torch.from_numpy(state_np).unsqueeze(0)
-        
-        # --- B. Agent Decision ---
-        action_probs, value = model(state_tensor)
-        dist = torch.distributions.Categorical(action_probs)
-        action = dist.sample()
-        action_val = action.item() # 0 = Stay, 1 = Switch
-        
-        reward_accumulated = 0
-        
-        # --- C. Execute Action ---
-        if action_val == 1:
-            # === SWITCH SEQUENCE ===
-            # 1. Determine Yellow Phase (Assuming GreenID + 1 is Yellow)
-            current_green_id = PHASE_CYCLE[current_phase_idx]
-            yellow_phase_id = current_green_id + 1
+    with torch.no_grad():
+        while step < SIM_TIME:
+            # --- A. Observe State ---
+            state_np = get_state(current_phase_idx)
+            state_tensor = torch.from_numpy(state_np).unsqueeze(0)
             
-            # 2. Set Yellow & Simulate
-            traci.trafficlight.setPhase(TL_ID, yellow_phase_id)
-            for _ in range(YELLOW_DURATION):
+            # --- B. Agent Decision ---
+            action_probs, _ = model(state_tensor)
+            dist = torch.distributions.Categorical(action_probs)
+            action = dist.sample()
+            action_val = action.item() # 0 = Stay, 1 = Switch
+            
+            reward_accumulated = 0
+            
+            # --- C. Execute Action ---
+            if action_val == 1:
+                # === SWITCH SEQUENCE ===
+                # 1. Determine Yellow Phase (Assuming GreenID + 1 is Yellow)
+                current_green_id = PHASE_CYCLE[current_phase_idx]
+                yellow_phase_id = current_green_id + 1
+                
+                # 2. Set Yellow & Simulate
+                traci.trafficlight.setPhase(TL_ID, yellow_phase_id)
+                for _ in range(YELLOW_DURATION):
+                    sim_step()
+                    step += 1
+                    reward_accumulated += get_reward()
+                
+                # 3. Update Index to Next Green
+                current_phase_idx = (current_phase_idx + 1) % NUM_PHASES
+                next_green_id = PHASE_CYCLE[current_phase_idx]
+                traci.trafficlight.setPhase(TL_ID, next_green_id)
+                
+            # If action_val == 0 (Stay), we do nothing here and just continue the current Green.
+
+            # --- D. Green Duration (Minimum Hold Time) ---
+            # We hold the (new or existing) Green light for 10 seconds
+            for _ in range(GREEN_DURATION):
+                if step >= SIM_TIME: break
                 sim_step()
                 step += 1
                 reward_accumulated += get_reward()
             
-            # 3. Update Index to Next Green
-            current_phase_idx = (current_phase_idx + 1) % NUM_PHASES
-            next_green_id = PHASE_CYCLE[current_phase_idx]
-            traci.trafficlight.setPhase(TL_ID, next_green_id)
-            
-        # If action_val == 0 (Stay), we do nothing here and just continue the current Green.
-
-        # --- D. Green Duration (Minimum Hold Time) ---
-        # We hold the (new or existing) Green light for 10 seconds
-        for _ in range(GREEN_DURATION):
-            if step >= SIM_TIME: break
-            sim_step()
-            step += 1
-            reward_accumulated += get_reward()
-            
-        # --- E. Learn (Actor-Critic Update) ---
-        # 1. Observe New State
-        next_state_np = get_state(current_phase_idx)
-        next_state_tensor = torch.from_numpy(next_state_np).unsqueeze(0)
-        
-        # 2. Calculate Target (TD Target)
-        _, next_value = model(next_state_tensor)
-        target_value = reward_accumulated + GAMMA * next_value.item()
-        
-        # 3. Calculate Advantage (TD Error)
-        advantage = target_value - value.item()
-        
-        # 4. Compute Losses
-        # Critic attempts to minimize prediction error
-        critic_loss = F.mse_loss(value, torch.tensor([[target_value]]))
-        
-        # Actor attempts to maximize expected reward (minimize -log_prob * advantage)
-        log_prob = dist.log_prob(action)
-        actor_loss = -log_prob * advantage
-        
-        total_loss = actor_loss + critic_loss
-        
-        # 5. Backpropagate
-        optimizer.zero_grad()
-        total_loss.backward()
-        # Clip gradients to prevent explosion during heavy traffic jams
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        
-        # --- F. Logging ---
-        if step % 100 < GREEN_DURATION + YELLOW_DURATION: # Print roughly every 100s
-            print(f"Time: {step}s | Phase: {current_phase_idx} | "
-                  f"Action: {'Switch' if action_val==1 else 'Stay'} | "
-                  f"Reward: {reward_accumulated:.2f} | Loss: {total_loss.item():.4f}")
+            # --- F. Logging ---
+            if step % 100 < GREEN_DURATION + YELLOW_DURATION: # Print roughly every 100s
+                print(f"Time: {step}s | Phase: {current_phase_idx} | "
+                      f"Action: {'Switch' if action_val==1 else 'Stay'} | ")
 
     traci.close()
     print("Simulation finished.")
 
     df = pd.DataFrame(data)
-    df.to_csv("ac.csv")
+    df.to_csv("ac-test.csv")
 
 if __name__ == "__main__":
     run_simulation()
